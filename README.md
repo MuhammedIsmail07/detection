@@ -1,4 +1,4 @@
-ITS A AI-DRIVEN SYSTEM FOR DETECT ANIMALS AND OBJECTS AND ALERT THE DETECTIONS.\n
+ITS A AI-DRIVEN SYSTEM FOR DETECT ANIMALS AND OBJECTS AND ALERT THE DETECTIONS.
 For implementation :
 1-clone the repo: "git clone https://github.com/MuhammedIsmail07/detection.git"
 2-Create a subfolder inside the main folder called ".streamlit" and move the "secrets.toml" file into there.
