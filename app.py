@@ -11,6 +11,8 @@ import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime
 import threading
+from streamlit.components.v1 import html
+from streamlit import toast
 
 # App configuration
 st.set_page_config(
@@ -19,9 +21,83 @@ st.set_page_config(
     layout="wide"
 )
 
+# ================== DEFINITIONS ==================
+
+class AlertSystem:
+    """
+    Handles all alert types (visual, audio, email) for the detection system.
+    
+    Attributes:
+        visual_enabled (bool): Toggle for visual alerts
+        audio_enabled (bool): Toggle for audio alerts
+        email_enabled (bool): Toggle for email alerts
+        email_recipient (str): Email address to receive alerts
+        email_threshold (float): Confidence threshold for email alerts
+        last_email_time (float): Timestamp of last email sent
+        email_cooldown (int): Minimum seconds between emails
+    """
+    
+    def __init__(self):
+        self.visual_enabled = True
+        self.audio_enabled = False
+        self.email_enabled = False
+        self.email_recipient = ""
+        self.email_threshold = 0.7
+        self.last_email_time = 0
+        self.email_cooldown = 60  # 1 minute cooldown
+    
+    def visual_alert(self, frame):
+        """Adds red border to frame for visual alert"""
+        return cv2.copyMakeBorder(frame, 10, 10, 10, 10, 
+                                 cv2.BORDER_CONSTANT, value=[0, 0, 255])
+    
+    def audio_alert(self):
+        """Triggers browser-based audio alert"""
+        html_str = """
+        <audio autoplay>
+            <source src="https://www.soundjay.com/buttons/sounds/beep-07.mp3" type="audio/mpeg">
+        </audio>
+        """
+        html(html_str, height=0)
+    
+    def email_alert(self, detections):
+        """
+        Sends email alert if conditions are met.
+        
+        Args:
+            detections (list): List of detection dictionaries
+            
+        Returns:
+            bool: True if email was sent, False otherwise
+        """
+        if not self.email_enabled or not self.email_recipient:
+            return False
+            
+        current_time = time.time()
+        if current_time - self.last_email_time < self.email_cooldown:
+            return False
+            
+        # Filter high confidence detections
+        high_conf_detections = [
+            f"{d['label']} ({d['confidence']:.0%})" 
+            for d in detections 
+            if d['confidence'] >= self.email_threshold
+        ]
+        
+        if not high_conf_detections:
+            return False
+            
+        if send_email_alert(high_conf_detections, self.email_recipient):
+            self.last_email_time = current_time
+            return True
+        return False
+
+# ================== MAIN CODE ==================
+
 # Load YOLOv8 model (cached)
 @st.cache_resource
 def load_model():
+    """Loads and caches the YOLOv8 model"""
     try:
         model = YOLO('yolov8n.pt')  # Load pretrained model
         return model
@@ -29,26 +105,47 @@ def load_model():
         st.error(f"Failed to load model: {e}")
         return None
 
-# Email alert function
 def send_email_alert(detected_objects, recipient):
-    sender = "your_email@example.com"
-    password = "your_email_password"
-    
-    msg = MIMEText(f"ALERT: The following objects were detected: {', '.join(detected_objects)}")
-    msg['Subject'] = "Security Alert: Object Detection"
-    msg['From'] = sender
-    msg['To'] = recipient
-    
+    """Sends email alert with detection details"""
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+        # Get credentials from Streamlit secrets
+        sender = st.secrets["email"]["sender"]
+        password = st.secrets["email"]["password"]
+        smtp_server = st.secrets["email"].get("smtp_server", "smtp.gmail.com")
+        smtp_port = st.secrets["email"].get("smtp_port", 465)
+        
+        # Create message
+        msg = MIMEText(
+            f"ALERT: The following objects were detected:\n\n"
+            f"{chr(10).join(detected_objects)}\n\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        msg['Subject'] = "🚨 Security Alert: Objects Detected"
+        msg['From'] = sender
+        msg['To'] = recipient
+        
+        # Send email
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
             server.login(sender, password)
             server.send_message(msg)
-        st.success("Email alert sent successfully!")
+        return True
     except Exception as e:
-        st.error(f"Failed to send email: {e}")
+        st.error(f"Email failed: {str(e)}")
+        return False
 
-# Detection function
 def run_detection(model, frame, confidence_threshold, classes_to_detect):
+    """
+    Runs object detection on a frame.
+    
+    Args:
+        model: YOLOv8 model
+        frame: Input image frame
+        confidence_threshold: Minimum confidence score
+        classes_to_detect: List of class names to detect
+        
+    Returns:
+        tuple: (processed_frame, detections)
+    """
     results = model(frame, verbose=False)
     detections = []
     
@@ -75,8 +172,8 @@ def run_detection(model, frame, confidence_threshold, classes_to_detect):
     
     return frame, detections
 
-# Main application
 def main():
+    """Main application function"""
     st.title("🐾 AI-Powered Animal & Object Detection")
     st.markdown("Real-time detection with alert system")
     
@@ -87,6 +184,9 @@ def main():
         st.session_state.detection_history = []
     if 'alert_triggered' not in st.session_state:
         st.session_state.alert_triggered = False
+    
+    # Initialize Alert System
+    alert_system = AlertSystem()
     
     # Sidebar controls
     with st.sidebar:
@@ -105,7 +205,7 @@ def main():
             min_value=0.1, max_value=1.0, value=0.5, step=0.05
         )
         
-        # Classes to detect (common animals and objects)
+        # Classes to detect
         class_options = [
             'person', 'bicycle', 'car', 'motorcycle', 'dog', 'cat', 
             'bird', 'horse', 'sheep', 'cow', 'bear', 'elephant', 
@@ -119,13 +219,13 @@ def main():
         
         # Alert settings
         st.subheader("Alert Settings")
-        enable_visual_alert = st.checkbox("Visual Alert", True)
-        enable_sound_alert = st.checkbox("Sound Alert", False)
-        enable_email_alert = st.checkbox("Email Alert", False)
+        alert_system.visual_enabled = st.checkbox("Visual Alert", True)
+        alert_system.audio_enabled = st.checkbox("Sound Alert", False)
+        alert_system.email_enabled = st.checkbox("Email Alert", False)
         
-        if enable_email_alert:
-            email_recipient = st.text_input("Recipient Email")
-            email_threshold = st.slider(
+        if alert_system.email_enabled:
+            alert_system.email_recipient = st.text_input("Recipient Email")
+            alert_system.email_threshold = st.slider(
                 "Email Alert Confidence Threshold",
                 min_value=0.1, max_value=1.0, value=0.7, step=0.05
             )
@@ -183,27 +283,16 @@ def main():
                     st.session_state.alert_triggered = True
                     
                     # Visual alert
-                    if enable_visual_alert:
-                        processed_frame = cv2.copyMakeBorder(
-                            processed_frame, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=[0, 0, 255]
-                        )
+                    if alert_system.visual_enabled:
+                        processed_frame = alert_system.visual_alert(processed_frame)
                     
-                    # Sound alert (browser-based)
-                    if enable_sound_alert:
-                        st.write('<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/beep-07.mp3" type="audio/mpeg"></audio>', 
-                                unsafe_allow_html=True)
+                    # Audio alert
+                    if alert_system.audio_enabled:
+                        alert_system.audio_alert()
                     
-                    # Email alert for high confidence detections
-                    if enable_email_alert and email_recipient:
-                        high_conf_detections = [
-                            d['label'] for d in detections 
-                            if d['confidence'] >= email_threshold
-                        ]
-                        if high_conf_detections:
-                            threading.Thread(
-                                target=send_email_alert,
-                                args=(high_conf_detections, email_recipient)
-                            ).start()
+                    # Email alert
+                    if alert_system.email_alert(detections):
+                        st.toast("Email alert sent!", icon="✉️")
                 
                 # Display processed frame
                 frame_placeholder.image(processed_frame, channels="BGR", use_column_width=True)
